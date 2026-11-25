@@ -1,0 +1,307 @@
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Messenger</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #e9eef3;
+      color: #202b36;
+    }
+    .auth {
+      max-width: 380px;
+      margin: 10vh auto;
+      padding: 28px;
+      background: white;
+      border-radius: 14px;
+      box-shadow: 0 8px 30px #0001;
+    }
+    h2 { margin-top: 0; }
+    input, button {
+      width: 100%;
+      padding: 13px;
+      margin: 7px 0;
+      border: 1px solid #d5dce3;
+      border-radius: 8px;
+      font-size: 15px;
+    }
+    button {
+      background: #2787d9;
+      color: white;
+      border: 0;
+      cursor: pointer;
+    }
+    button.secondary { background: #687887; }
+    #app {
+      display: none;
+      height: 100vh;
+      grid-template-columns: 300px 1fr;
+    }
+    aside {
+      background: #17212b;
+      color: white;
+      padding: 18px;
+      overflow-y: auto;
+    }
+    .user {
+      padding: 14px;
+      margin: 8px 0;
+      border-radius: 9px;
+      background: #263746;
+      cursor: pointer;
+    }
+    .user:hover { background: #344b60; }
+    main {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    header {
+      background: white;
+      padding: 18px;
+      font-weight: bold;
+      border-bottom: 1px solid #ddd;
+    }
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+    }
+    .message {
+      background: white;
+      padding: 12px;
+      border-radius: 12px;
+      margin: 8px 0;
+      max-width: 75%;
+      overflow-wrap: anywhere;
+    }
+    .mine {
+      background: #d9fdd3;
+      margin-left: auto;
+    }
+    .send {
+      display: flex;
+      padding: 12px;
+      background: white;
+      gap: 8px;
+    }
+    .send input { margin: 0; }
+    .send button { width: 100px; margin: 0; }
+    #status { color: #b00020; font-size: 14px; }
+    @media(max-width:650px) {
+      #app { grid-template-columns: 115px 1fr; }
+      aside { padding: 8px; }
+      .user { padding: 9px 5px; font-size: 12px; }
+    }
+  </style>
+</head>
+<body>
+
+<section class="auth" id="auth">
+  <h2>Messenger</h2>
+  <p>Войди или создай аккаунт</p>
+  <input id="email" type="email" placeholder="Электронная почта">
+  <input id="password" type="password" placeholder="Пароль">
+  <input id="username" placeholder="Имя пользователя (для регистрации)">
+  <button onclick="signUp()">Регистрация</button>
+  <button class="secondary" onclick="signIn()">Войти</button>
+  <p id="status"></p>
+</section>
+
+<div id="app">
+  <aside>
+    <h2>Messenger</h2>
+    <p id="myName"></p>
+    <button class="secondary" onclick="signOut()">Выйти</button>
+    <h3>Пользователи</h3>
+    <div id="users">Загрузка...</div>
+  </aside>
+  <main>
+    <header id="chatTitle">Выбери собеседника</header>
+    <div id="messages"></div>
+    <div class="send">
+      <input id="messageInput" placeholder="Написать сообщение..." disabled>
+      <button id="sendButton" onclick="sendMessage()" disabled>Отправить</button>
+    </div>
+  </main>
+</div>
+
+<script>
+const SUPABASE_URL = "https://tssaafbtjyjlxbnputxn.supabase.co";
+const SUPABASE_KEY = "sb_publishable_aFb_6dR-CkWmWa4MNtW4bQ_TzmdTntD";
+
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+let currentUser = null;
+let selectedUser = null;
+let channel = null;
+
+function showError(error) {
+  document.getElementById("status").textContent =
+    error.message || String(error);
+}
+
+async function signUp() {
+  const email = document.getElementById("email").value.trim();
+  const password = document.getElementById("password").value;
+  const username = document.getElementById("username").value.trim();
+
+  if (!username) {
+    showError("Введи имя пользователя.");
+    return;
+  }
+
+  const { data, error } = await db.auth.signUp({
+    email, password,
+    options: { data: { username } }
+  });
+
+  if (error) return showError(error);
+  document.getElementById("status").textContent =
+    "Регистрация отправлена. Проверь почту, если требуется подтверждение.";
+  if (data.session) await startApp(data.session.user);
+}
+
+async function signIn() {
+  const email = document.getElementById("email").value.trim();
+  const password = document.getElementById("password").value;
+
+  const { data, error } = await db.auth.signInWithPassword({
+    email, password
+  });
+
+  if (error) return showError(error);
+  await startApp(data.user);
+}
+
+async function signOut() {
+  await db.auth.signOut();
+  location.reload();
+}
+
+async function startApp(user) {
+  currentUser = user;
+  document.getElementById("auth").style.display = "none";
+  document.getElementById("app").style.display = "grid";
+
+  const { data: profile } = await db.from("profiles")
+    .select("username").eq("id", user.id).single();
+
+  document.getElementById("myName").textContent =
+    profile?.username || user.email;
+
+  await loadUsers();
+}
+
+async function loadUsers() {
+  const { data, error } = await db.from("profiles")
+    .select("id, username").neq("id", currentUser.id)
+    .order("username");
+
+  if (error) {
+    document.getElementById("users").textContent = error.message;
+    return;
+  }
+
+  const container = document.getElementById("users");
+  container.replaceChildren();
+
+  data.forEach(person => {
+    const item = document.createElement("div");
+    item.className = "user";
+    item.textContent = person.username;
+    item.onclick = () => openChat(person);
+    container.appendChild(item);
+  });
+
+  if (!data.length) container.textContent = "Пока нет других пользователей.";
+}
+
+async function openChat(person) {
+  selectedUser = person;
+  document.getElementById("chatTitle").textContent =
+    "Чат с " + person.username;
+  document.getElementById("messageInput").disabled = false;
+  document.getElementById("sendButton").disabled = false;
+
+  if (channel) await db.removeChannel(channel);
+
+  await loadMessages();
+
+  channel = db.channel("chat-" + [currentUser.id, person.id].sort().join("-"))
+    .on("postgres_changes", {
+      event: "INSERT",
+      schema: "public",
+      table: "messages"
+    }, payload => {
+      const m = payload.new;
+      if (
+        (m.sender_id === currentUser.id && m.recipient_id === selectedUser.id) ||
+        (m.sender_id === selectedUser.id && m.recipient_id === currentUser.id)
+      ) addMessage(m);
+    }).subscribe();
+}
+
+async function loadMessages() {
+  const { data, error } = await db.from("messages")
+    .select("*")
+    .or(
+      `and(sender_id.eq.${currentUser.id},recipient_id.eq.${selectedUser.id}),and(sender_id.eq.${selectedUser.id},recipient_id.eq.${currentUser.id})`
+    )
+    .order("created_at");
+
+  if (error) {
+    document.getElementById("messages").textContent = error.message;
+    return;
+  }
+
+  const box = document.getElementById("messages");
+  box.replaceChildren();
+  data.forEach(addMessage);
+}
+
+function addMessage(message) {
+  const box = document.getElementById("messages");
+  if (document.querySelector('[data-message-id="' + message.id + '"]')) return;
+
+  const item = document.createElement("div");
+  item.className = "message" +
+    (message.sender_id === currentUser.id ? " mine" : "");
+  item.dataset.messageId = message.id;
+  item.textContent = message.body;
+  box.appendChild(item);
+  box.scrollTop = box.scrollHeight;
+}
+
+async function sendMessage() {
+  const input = document.getElementById("messageInput");
+  const body = input.value.trim();
+  if (!body || !selectedUser) return;
+
+  const { error } = await db.from("messages").insert({
+    sender_id: currentUser.id,
+    recipient_id: selectedUser.id,
+    body
+  });
+
+  if (error) return alert(error.message);
+  input.value = "";
+}
+
+document.getElementById("messageInput")
+  .addEventListener("keydown", e => {
+    if (e.key === "Enter") sendMessage();
+  });
+
+db.auth.getSession().then(({ data }) => {
+  if (data.session) startApp(data.session.user);
+});
+</script>
+</body>
+</html>
